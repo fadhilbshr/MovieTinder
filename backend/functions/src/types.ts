@@ -1,6 +1,16 @@
 import { Timestamp } from 'firebase-admin/firestore';
 
-export type ParticipantStatus = 'active' | 'finished' | 'left';
+// 'joined'   -> in the lobby, not yet ready
+// 'ready'    -> in the lobby, marked ready; waiting on the host to start
+// 'active'   -> swiping; only reachable via the host-triggered startSwiping
+//               function, never written directly by a client
+// 'finished' -> reached the end of the deck
+// 'left'     -> explicit Leave Session during the swipe phase (see
+//               onParticipantLeave). Leaving during the lobby instead
+//               deletes the participant doc outright — 'left' is never used
+//               pre-start.
+export type ParticipantStatus = 'joined' | 'ready' | 'active' | 'finished' | 'left';
+export type SessionStatus = 'lobby' | 'active' | 'completed';
 export type SwipeDirection = 'left' | 'right';
 export type SwipeSource = 'swipe' | 'auto_left';
 
@@ -21,9 +31,10 @@ export interface Session {
   hostId: string;
   filters: SessionFilters;
   movieIds: number[];    // ordered deck snapshot, TMDb movie IDs — same
-                          // order shown to every participant, including
-                          // late joiners
-  status: 'active' | 'completed';
+                          // order shown to every participant
+  status: SessionStatus; // 'lobby' until the host calls startSwiping, then
+                          // 'active', then 'completed' once everyone is
+                          // finished or left
   createdAt: Timestamp;
 }
 
