@@ -1,0 +1,58 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /sessions/{sessionId} {
+      // Session metadata (filters, movieIds, status) is only ever written
+      // server-side, by the generateSessionList Cloud Function using the
+      // Admin SDK — which bypasses these rules entirely.
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      match /participants/{participantId} {
+        allow read: if request.auth != null;
+
+        // A participant can only ever create their own doc, and must join
+        // as 'active'.
+        allow create: if request.auth != null
+                      && request.auth.uid == participantId
+                      && request.resource.data.status == 'active';
+
+        // A participant can only update their own doc. Once 'left', a doc
+        // is locked — no rejoining as active (see spec §7, "rejoining after
+        // leaving"). Clients may only move active -> finished or
+        // active -> left.
+        allow update: if request.auth != null
+                      && request.auth.uid == participantId
+                      && resource.data.status != 'left'
+                      && request.resource.data.status in ['active', 'finished', 'left'];
+
+        allow delete: if false;
+      }
+
+      match /swipes/{swipeId} {
+        // swipeId convention: {participantId}_{movieId}
+        allow read: if request.auth != null;
+
+        // Clients may only ever record genuine swipes. 'auto_left' swipes
+        // are written exclusively by the onParticipantLeave Cloud Function
+        // via the Admin SDK, never by a client.
+        allow create: if request.auth != null
+                      && request.resource.data.participantId == request.auth.uid
+                      && request.resource.data.direction in ['left', 'right']
+                      && request.resource.data.source == 'swipe';
+
+        // Swipes are immutable once cast.
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      match /movieStats/{movieId} {
+        // Fully derived data. Only onSwipeWrite / onParticipantLeave
+        // Cloud Functions write here.
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+    }
+  }
+}
