@@ -29,7 +29,7 @@ export const generateSessionList = onCall(async (request) => {
     hostId: request.auth.uid,
     filters,
     movieIds,
-    status: 'active',
+    status: 'lobby',
     createdAt: Timestamp.now(),
   };
 

@@ -12,22 +12,42 @@ service cloud.firestore {
       match /participants/{participantId} {
         allow read: if request.auth != null;
 
-        // A participant can only ever create their own doc, and must join
-        // as 'active'.
+        // A participant can only ever create their own doc, must join as
+        // 'joined' (not ready), and can only join while the session is
+        // still in its lobby — once startSwiping has flipped the session to
+        // 'active', no new participants can be added.
         allow create: if request.auth != null
                       && request.auth.uid == participantId
-                      && request.resource.data.status == 'active';
+                      && request.resource.data.status == 'joined'
+                      && get(/databases/$(database)/documents/sessions/$(sessionId)).data.status == 'lobby';
 
-        // A participant can only update their own doc. Once 'left', a doc
-        // is locked — no rejoining as active (see spec §7, "rejoining after
-        // leaving"). Clients may only move active -> finished or
-        // active -> left.
+        // A participant can only update their own doc, and only along two
+        // paths:
+        //  - toggle ready state back and forth while still in the lobby
+        //    ('joined' <-> 'ready')
+        //  - once swiping has started, move from 'active' to 'finished' or
+        //    'left'
+        // The 'ready' -> 'active' transition is never written by a client —
+        // only the startSwiping Cloud Function (Admin SDK) makes it, once
+        // every participant is ready. Once 'left', a doc is locked — no
+        // rejoining (see spec §7, "rejoining after leaving").
         allow update: if request.auth != null
                       && request.auth.uid == participantId
-                      && resource.data.status != 'left'
-                      && request.resource.data.status in ['active', 'finished', 'left'];
+                      && (
+                           (resource.data.status in ['joined', 'ready']
+                             && request.resource.data.status in ['joined', 'ready'])
+                           || (resource.data.status == 'active'
+                             && request.resource.data.status in ['finished', 'left'])
+                         );
 
-        allow delete: if false;
+        // Leaving during the lobby (before swiping starts) just removes the
+        // participant doc outright — they never had a deck position, so
+        // there's nothing to auto-swipe. Leaving mid-swipe instead uses the
+        // update path above ('active' -> 'left'), which onParticipantLeave
+        // reacts to.
+        allow delete: if request.auth != null
+                      && request.auth.uid == participantId
+                      && resource.data.status in ['joined', 'ready'];
       }
 
       match /swipes/{swipeId} {

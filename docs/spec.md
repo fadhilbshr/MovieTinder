@@ -32,11 +32,14 @@ in-app chat, etc.) is listed in §9 as Phase 2 so the first build stays lean.
    and produces a shareable link (`moviesw.app/join/AB3F9K`).
 4. Host shares the link (standard Android share sheet — text, WhatsApp, etc.).
 5. Each recipient taps the link → app opens (or Play Store install → resumes
-   into the session) → enters a display name → joins.
-6. Everyone swipes through the same deck independently, at their own pace.
-7. As swipes come in, the app computes matches in real time.
-8. Once someone finishes their deck, they can view a live **Matches** screen.
-9. When everyone's done: final match list is shown. If empty, the host can
+   into the session) → enters a display name → joins the **lobby**.
+6. Everyone in the lobby marks themselves **ready**. Once every participant
+   is ready (minimum 2), the host taps **Start Swiping**, which locks the
+   lobby — no one can join after this point.
+7. Everyone swipes through the same deck independently, at their own pace.
+8. As swipes come in, the app computes matches in real time.
+9. Once someone finishes their deck, they can view a live **Matches** screen.
+10. When everyone's done: final match list is shown. If empty, the host can
    **re-filter and re-deal** a new round within the same group, or the group
    can eyeball the "close calls" (movies most people liked) and decide manually.
 
@@ -60,8 +63,24 @@ in-app chat, etc.) is listed in §9 as Phase 2 so the first build stays lean.
 - Link opens the app directly to the "join session" screen if installed, or
   Play Store → app → session if not (standard deferred deep link pattern).
 - No account needed to join — anonymous participation, just a display name.
+- Joining lands in the **lobby**, not directly in the deck — see §3.3.
 
-### 3.3 Swipe interface
+### 3.3 Lobby — RESOLVED
+- After joining, a participant sees who else has joined and a **Ready**
+  toggle for themselves (can be flipped back and forth before the host
+  starts).
+- The host sees a **Start Swiping** button, enabled only once every
+  participant in the lobby is ready and there are at least 2 of them.
+- Starting locks the lobby: no one can join after this point, and the deck
+  (already generated at session-creation time) and the participant list are
+  both frozen. This is what guarantees every participant sees the identical
+  deck from card 1 — there's no late-joiner case to handle.
+- Leaving the lobby (before the host starts) removes the participant
+  outright — no deck position was ever assigned to them, so there's nothing
+  to auto-swipe on their behalf. This is different from leaving mid-swipe
+  (§3.5).
+
+### 3.4 Swipe interface
 - Full-bleed poster, title, year, TMDb rating, genre chips, runtime, 2–3 line
   synopsis, top 4 cast names, and streaming service logos (if available).
 - Swipe right = like, swipe left = pass. Tap card = expand full details.
@@ -69,17 +88,23 @@ in-app chat, etc.) is listed in §9 as Phase 2 so the first build stays lean.
 - Swipes sync to the backend as they happen (no "submit" step).
 - Works offline mid-deck; queues and syncs swipes when connectivity returns.
 
-### 3.4 Matching — RESOLVED
+### 3.5 Matching — RESOLVED
 - **Threshold: unanimous.** A movie is a full **match** once every participant
   who ever joined the session has a "yes" recorded for it (see leaving rule
-  below — a yes can be a real swipe or an automatic one).
-- **Deck order is identical for every participant**, including late joiners —
-  everyone swipes the exact same ordered list.
-- **Leaving mid-session:** leaving is an explicit action ("Leave Session," with
+  below — a yes can be a real swipe or an automatic one). Since the lobby
+  locks before swiping starts (§3.3), "everyone who ever joined" is a fixed
+  set for the whole session — no one can join mid-swipe and change the
+  denominator.
+- **Deck order is identical for every participant** — everyone swipes the
+  exact same ordered list, since both the deck and the participant list are
+  frozen when the host starts swiping.
+- **Leaving mid-swipe:** leaving is an explicit action ("Leave Session," with
   a confirmation dialog explaining the consequence) — not inferred from the app
   being closed or backgrounded. On confirmed leave, every card from the
   participant's current position to the end of the deck is auto-recorded as a
   **right swipe tagged `auto_left`**, distinct from a genuine `swipe` right.
+  (Leaving the lobby, before swiping starts, is a separate, simpler path —
+  see §3.3.)
 - **Live "It's a Match!" toast/animation** the moment a movie hits unanimous
   yes, visible to whoever is active in the app at that moment.
 - **Matches screen is a single ranked list, not just a binary match/no-match
@@ -97,7 +122,7 @@ in-app chat, etc.) is listed in §9 as Phase 2 so the first build stays lean.
 - Once all participants are `finished` or `left`, session status flips to
   `completed` and this ranked list becomes the final result.
 
-### 3.5 No-match handling
+### 3.6 No-match handling
 - If the final match list is empty (or too small), the host gets two options:
   - **Re-filter**: adjust criteria (e.g., lower min rating, allow more genres)
     and generate a fresh list within the same session/group — no need to
@@ -115,14 +140,20 @@ sessions/{sessionId}
   filters: { genres[], yearMin, yearMax, minRating, runtimeMin, runtimeMax,
              streamingServices[], region, listSize }
   movieIds: [tmdbId, tmdbId, ...]      // ordered deck, snapshot at generation time
-  status: "active" | "completed"
+  status: "lobby" | "active" | "completed"   // "lobby" until the host calls
+                                              // startSwiping, which locks joining
   createdAt: timestamp
 
 sessions/{sessionId}/participants/{participantId}
   displayName: string
   joinedAt: timestamp
   deckPosition: number       // index of last card swiped
-  status: "active" | "finished" | "left"
+  status: "joined" | "ready" | "active" | "finished" | "left"
+                              // joined/ready = lobby, not yet swiping
+                              // active = swiping (set only by startSwiping,
+                              //   never written by a client)
+                              // finished/left = done, mid-swipe only —
+                              //   leaving the lobby deletes the doc instead
   leftAt: timestamp | null
 
 sessions/{sessionId}/swipes/{participantId_movieId}
@@ -147,13 +178,18 @@ device (Room DB) so re-opening the app doesn't re-hit the API for every card.
 
 **Why Cloud Functions for match computation:** if every client computes matches
 independently from raw swipe data, clock drift and partial reads can cause the
-match toast to fire inconsistently. Two triggers do the real work:
+match toast to fire inconsistently. Three functions do the real work:
+- `startSwiping`: host-only callable. Requires every lobby participant to be
+  `ready` and at least 2 of them present, then transactionally flips
+  `session.status` to `active` and every participant's `status` to `active`.
+  This is also what locks the lobby — `firestore.rules` only allows a new
+  participant doc to be created while `session.status == "lobby"`.
 - `onSwipeWrite`: recalculates `movieStats/{movieId}` whenever a swipe is written.
-- `onParticipantLeave`: when a participant's status flips to `left`, this
-  function batch-writes `auto_left` right-swipes for every remaining card in
-  their deck, then recalculates `movieStats` for each of those movies. Doing
-  this server-side avoids a client having to stay online to "finish" writing
-  on someone else's behalf.
+- `onParticipantLeave`: when a participant's status flips to `left` (mid-swipe
+  only), this function batch-writes `auto_left` right-swipes for every
+  remaining card in their deck, then recalculates `movieStats` for each of
+  those movies. Doing this server-side avoids a client having to stay online
+  to "finish" writing on someone else's behalf.
 
 ---
 
@@ -191,7 +227,9 @@ match toast to fire inconsistently. Two triggers do the real work:
 2. Filter picker
 3. "List ready — share this link" screen (with QR code + share sheet)
 4. Join Session (name entry)
-5. Waiting room (optional — shows who's joined so far before swiping starts)
+5. Lobby — shows who's joined, a Ready toggle per participant, and (host
+   only) a Start Swiping button, enabled once everyone's ready and the
+   2-participant minimum is met
 6. Swipe deck
 7. Movie detail (expanded card)
 8. Live Matches tab
@@ -202,24 +240,27 @@ match toast to fire inconsistently. Two triggers do the real work:
 ## 7. Edge Cases & Open Decisions
 
 **Resolved:**
-- **Deck order:** identical for every participant, including late joiners.
-- **Match threshold:** unanimous — every participant who ever joined needs a
-  yes (real or `auto_left`).
-- **Late joiners:** get the exact same deck, in the same order, from the top.
-  Since matching is unanimous across *everyone who ever joined*, a late joiner
-  simply adds themselves to the denominator — no movie is a full match until
-  they've swiped (or left) too.
-- **Participant leaves mid-session:** all of their un-reached cards are
+- **Lobby locks before swiping:** everyone joins a lobby and marks ready; the
+  host starts swiping only once everyone's ready and the 2-participant
+  minimum is met. No one can join after that (§3.3), which is what
+  guarantees deck order is identical for every participant — there's no
+  late-joiner case to handle.
+- **Match threshold:** unanimous — every participant who was in the lobby
+  when swiping started needs a yes (real or `auto_left`). Since joining locks
+  before swiping, this denominator can't change mid-session.
+- **Leaving the lobby:** removes the participant's doc outright — no deck
+  position was ever assigned, so there's nothing to auto-swipe.
+- **Participant leaves mid-swipe:** all of their un-reached cards are
   auto-recorded as right swipes, tagged `auto_left` so the Matches screen can
-  visually distinguish them from genuine yeses (see §3.4).
+  visually distinguish them from genuine yeses (see §3.5).
+- **Minimum group size:** 2 participants minimum, enforced by `startSwiping`
+  before it'll lock the lobby.
+- **Rejoining after leaving:** if someone left mid-swipe, then reopens the
+  link, they stay locked as `left` — reopening the link just shows them the
+  live results, keeps the auto-yes logic unambiguous.
 
 **Still open:**
 - **Session expiry:** recommend auto-expiring sessions after 7 days of inactivity.
-- **Minimum group size:** recommend 2 participants minimum to start swiping.
-- **Rejoining after leaving:** if someone left, then reopens the link — do they
-  rejoin as `active` (able to swipe again) or stay locked as `left`?
-  *Recommendation for v1: locked as `left` — reopening the link just shows them
-  the live results, keeps the auto-yes logic unambiguous.*
 
 ---
 
@@ -251,7 +292,7 @@ match toast to fire inconsistently. Two triggers do the real work:
 1. Firebase project + anonymous auth + Firestore schema
 2. TMDb integration (Cloud Function: filters → movie ID list)
 3. Session creation + share link (App Links)
-4. Join flow
+4. Join flow + Lobby (ready toggle, host Start Swiping → `startSwiping`)
 5. Swipe deck UI + swipe-write-to-Firestore
 6. Match computation (Cloud Function) + live Matches screen
 7. Final results + re-filter loop

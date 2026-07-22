@@ -1,6 +1,7 @@
 import './admin';
 
 export { generateSessionList } from './generateSessionList';
+export { startSwiping } from './startSwiping';
 export { onSwipeWrite } from './onSwipeWrite';
 
 // Phase 1, still to do:
