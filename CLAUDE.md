@@ -112,7 +112,14 @@ sessions/{sessionId}/movieStats/{movieId}
   only — leaving the lobby deletes the doc instead and doesn't go through
   this trigger). Batch-writes `auto_left` right-swipes for every remaining
   card in that participant's deck (from `deckPosition + 1` to the end of
-  `movieIds`), then recomputes `movieStats` for each affected movie.
+  `movieIds`), then recomputes `movieStats` for each affected movie. Also
+  checks whether every participant is now `"finished"` or `"left"`, and if
+  so flips `session.status` to `"completed"`.
+- `onParticipantFinish` — Firestore trigger on `participants/{participantId}`
+  update, firing when `status` transitions to `"finished"`. Runs the same
+  "is everyone done" completion check as `onParticipantLeave` — needed
+  because a session can also complete via its last participant finishing
+  their deck rather than leaving.
 - Deploy `firestore.rules` as part of this phase.
 
 **Phase 2 — Android scaffold**

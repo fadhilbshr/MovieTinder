@@ -2,6 +2,7 @@ import { onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { Participant, Session, Swipe } from './types';
 import { recomputeMovieStats } from './movieStats';
+import { checkSessionCompletion } from './sessionCompletion';
 
 // Fires only on the mid-swipe leave path (active -> left). Leaving during
 // the lobby deletes the participant doc instead of updating it, so it never
@@ -25,22 +26,25 @@ export const onParticipantLeave = onDocumentUpdated(
 
     const session = sessionSnap.data() as Session;
     const remainingMovieIds = session.movieIds.slice(after.deckPosition + 1);
-    if (remainingMovieIds.length === 0) return;
 
-    const timestamp = Timestamp.now();
-    const batch = db.batch();
-    for (const movieId of remainingMovieIds) {
-      const swipe: Swipe = {
-        participantId,
-        movieId,
-        direction: 'right',
-        source: 'auto_left',
-        timestamp,
-      };
-      batch.set(sessionRef.collection('swipes').doc(`${participantId}_${movieId}`), swipe);
+    if (remainingMovieIds.length > 0) {
+      const timestamp = Timestamp.now();
+      const batch = db.batch();
+      for (const movieId of remainingMovieIds) {
+        const swipe: Swipe = {
+          participantId,
+          movieId,
+          direction: 'right',
+          source: 'auto_left',
+          timestamp,
+        };
+        batch.set(sessionRef.collection('swipes').doc(`${participantId}_${movieId}`), swipe);
+      }
+      await batch.commit();
+
+      await Promise.all(remainingMovieIds.map((movieId) => recomputeMovieStats(sessionId, movieId)));
     }
-    await batch.commit();
 
-    await Promise.all(remainingMovieIds.map((movieId) => recomputeMovieStats(sessionId, movieId)));
+    await checkSessionCompletion(sessionId);
   }
 );

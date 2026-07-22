@@ -178,7 +178,7 @@ device (Room DB) so re-opening the app doesn't re-hit the API for every card.
 
 **Why Cloud Functions for match computation:** if every client computes matches
 independently from raw swipe data, clock drift and partial reads can cause the
-match toast to fire inconsistently. Three functions do the real work:
+match toast to fire inconsistently. Five functions do the real work:
 - `startSwiping`: host-only callable. Requires every lobby participant to be
   `ready` and at least 2 of them present, then transactionally flips
   `session.status` to `active` and every participant's `status` to `active`.
@@ -190,6 +190,10 @@ match toast to fire inconsistently. Three functions do the real work:
   remaining card in their deck, then recalculates `movieStats` for each of
   those movies. Doing this server-side avoids a client having to stay online
   to "finish" writing on someone else's behalf.
+- `onParticipantLeave` and `onParticipantFinish` both also check whether
+  every participant is now `finished` or `left` and, if so, flip
+  `session.status` to `completed` — a session can complete either by its
+  last participant leaving or by finishing their deck.
 
 ---
 
