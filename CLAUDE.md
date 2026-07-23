@@ -123,6 +123,9 @@ sessions/{sessionId}/movieStats/{movieId}
 - Deploy `firestore.rules` as part of this phase.
 
 **Phase 2 — Android scaffold**
+- Lives in `android/` (Gradle project, package `com.movieswipe.app`). See
+  `android/README.md` for one-time setup (Gradle wrapper generation,
+  replacing the placeholder `google-services.json`).
 - New Compose project, Hilt, Firebase SDK, Coil, Room wired up
 - Anonymous auth on launch
 - Navigation graph: Create → Filters → Share → Join → Lobby → Swipe → Matches → Results
